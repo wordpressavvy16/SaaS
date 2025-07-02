@@ -122,15 +122,18 @@ backend:
 
   - task: "Business registration and approval workflow"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/server.py"
     stuck_count: 0
     priority: "high"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented business registration endpoint requiring Super Admin approval before activation"
+      - working: true
+        agent: "testing"
+        comment: "Successfully tested business registration and approval workflow. New businesses are created with pending status and require Super Admin approval. Business Admin accounts are properly activated after approval."
 
   - task: "Super Admin management system"
     implemented: true
