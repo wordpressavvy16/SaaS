@@ -197,15 +197,18 @@ backend:
 
   - task: "Business analytics dashboard"
     implemented: true
-    working: "NA"
+    working: true
     file: "/app/backend/server.py"
     stuck_count: 0
     priority: "medium"
-    needs_retesting: true
+    needs_retesting: false
     status_history:
       - working: "NA"
         agent: "main"
         comment: "Implemented analytics endpoint providing business metrics including contact count, workflow count, and status"
+      - working: true
+        agent: "testing"
+        comment: "Successfully tested business analytics dashboard endpoint. The API correctly returns business metrics including total contacts, total workflows, active workflows, business status, and business name."
 
   - task: "Database models and schemas"
     implemented: true
