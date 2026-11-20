@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Initial Super Admin Setup</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f3f4f6; display: grid; min-height: 100vh; place-items: center; margin: 0; }
+    form { background: white; padding: 2rem; border-radius: 1rem; width: min(90vw, 26rem); box-shadow: 0 10px 30px #0002; }
+    label { display: block; margin-top: 1rem; font-weight: 600; }
+    input { box-sizing: border-box; width: 100%; padding: .7rem; margin-top: .35rem; }
+    button { margin-top: 1.25rem; width: 100%; padding: .8rem; cursor: pointer; }
+    #result { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <form id="setup">
+    <h1>Initial Super Admin Setup</h1>
+    <p>One-time account setup. The bootstrap token must match the private Vercel environment variable and this endpoint closes after the first Super Admin is created.</p>
+    <label>Email<input name="email" type="email" required /></label>
+    <label>Username<input name="username" required /></label>
+    <label>Full name<input name="full_name" required /></label>
+    <label>Password (at least 12 characters)<input name="password" type="password" minlength="12" required /></label>
+    <label>Bootstrap token<input name="bootstrap_token" type="password" required /></label>
+    <button type="submit">Create Super Admin</button>
+    <p id="result" role="status"></p>
+  </form>
+  <script>
+    document.getElementById('setup').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const result = document.getElementById('result');
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      try {
+        const response = await fetch('/api/auth/bootstrap-super-admin', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+        });
+        const body = await response.json();
+        result.textContent = response.ok ? `${body.message} Remove the bootstrap token from Vercel after setup.` : (body.detail || 'Setup failed');
+      } catch (error) { result.textContent = `Request failed: ${error.message}`; }
+    });
+  </script>
+</body>
+</html>

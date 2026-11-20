@@ -1,557 +1,326 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, BackgroundTasks
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
-from passlib.context import CryptContext
-from jose import JWTError, jwt
+from __future__ import annotations
+
+import hmac
 import os
-import logging
 import uuid
-import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
-from enum import Enum
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import BusinessRow, ContactRow, SessionLocal, UserRow, WorkflowRow, init_db
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Security
-SECRET_KEY = os.environ.get("SECRET_KEY", "your-secret-key-change-in-production")
+load_dotenv(ROOT_DIR / ".env")
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY must be configured in the backend environment")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
+TOKEN_EXPIRE_MINUTES = 60
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
-
-# Create the main app
 app = FastAPI(title="Enterprise SaaS Platform", version="1.0.0")
-api_router = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api")
 
-# Enums
-class UserRole(str, Enum):
-    SUPER_ADMIN = "super_admin"
-    BUSINESS_ADMIN = "business_admin"
-    HR_MANAGER = "hr_manager"
-    SALES_MANAGER = "sales_manager"
-    SALES_EXECUTIVE = "sales_executive"
 
-class BusinessStatus(str, Enum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    SUSPENDED = "suspended"
-    REJECTED = "rejected"
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-class AIProvider(str, Enum):
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GEMINI = "gemini"
 
-# Models
-class User(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class BootstrapAdmin(BaseModel):
     email: EmailStr
     username: str
     full_name: str
-    role: UserRole
-    business_id: Optional[str] = None
-    is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    password: str = Field(min_length=12)
+    bootstrap_token: str
 
-class UserCreate(BaseModel):
-    email: EmailStr
-    username: str
-    full_name: str
-    password: str
-    role: UserRole
-    business_id: Optional[str] = None
 
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class Business(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+class BusinessSignup(BaseModel):
     name: str
-    description: Optional[str] = None
-    domain: Optional[str] = None
-    logo_url: Optional[str] = None
-    primary_color: str = "#3B82F6"
-    secondary_color: str = "#1E40AF"
-    status: BusinessStatus = BusinessStatus.PENDING
-    owner_id: Optional[str] = None
-    settings: Dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    approved_at: Optional[datetime] = None
-    approved_by: Optional[str] = None
-
-class BusinessCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    domain: Optional[str] = None
+    description: str | None = None
+    domain: str | None = None
     owner_email: EmailStr
     owner_name: str
     owner_username: str
-    owner_password: str
+    owner_password: str = Field(min_length=12)
+
+
+class LoginInput(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ContactInput(BaseModel):
+    first_name: str
+    last_name: str
+    email: EmailStr | None = None
+    phone: str | None = None
+    company: str | None = None
+    position: str | None = None
+    source: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    custom_fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowInput(BaseModel):
+    name: str
+    description: str | None = None
+    trigger_type: str
+    trigger_config: dict[str, Any] = Field(default_factory=dict)
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+
 
 class BusinessUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    domain: Optional[str] = None
-    logo_url: Optional[str] = None
-    primary_color: Optional[str] = None
-    secondary_color: Optional[str] = None
-    settings: Optional[Dict[str, Any]] = None
+    name: str | None = None
+    description: str | None = None
+    domain: str | None = None
+    logo_url: str | None = None
+    primary_color: str | None = None
+    secondary_color: str | None = None
+    settings: dict[str, Any] | None = None
 
-class Contact(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    business_id: str
-    first_name: str
-    last_name: str
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
-    company: Optional[str] = None
-    position: Optional[str] = None
-    source: Optional[str] = None
-    tags: List[str] = Field(default_factory=list)
-    custom_fields: Dict[str, Any] = Field(default_factory=dict)
-    lead_score: int = 0
-    status: str = "new"
-    assigned_to: Optional[str] = None
-    created_by: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class ContactCreate(BaseModel):
-    first_name: str
-    last_name: str
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
-    company: Optional[str] = None
-    position: Optional[str] = None
-    source: Optional[str] = None
-    tags: List[str] = Field(default_factory=list)
-    custom_fields: Dict[str, Any] = Field(default_factory=dict)
+async def get_db():
+    async with SessionLocal() as session:
+        yield session
 
-class AIWorkflow(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    business_id: str
-    name: str
-    description: Optional[str] = None
-    trigger_type: str  # "manual", "schedule", "webhook", "event"
-    trigger_config: Dict[str, Any] = Field(default_factory=dict)
-    actions: List[Dict[str, Any]] = Field(default_factory=list)
-    is_active: bool = True
-    created_by: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_run_at: Optional[datetime] = None
 
-class AIWorkflowCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    trigger_type: str
-    trigger_config: Dict[str, Any] = Field(default_factory=dict)
-    actions: List[Dict[str, Any]] = Field(default_factory=list)
+def user_public(user: UserRow) -> dict[str, Any]:
+    return {"id": user.id, "email": user.email, "username": user.username,
+            "full_name": user.full_name, "role": user.role, "business_id": user.business_id,
+            "is_active": user.is_active, "created_at": user.created_at,
+            "updated_at": user.updated_at}
 
-class AIChat(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    business_id: str
-    session_id: str
-    user_id: str
-    provider: AIProvider
-    model: str
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class AIChatMessage(BaseModel):
-    session_id: str
-    message: str
-    provider: Optional[AIProvider] = AIProvider.OPENAI
-    model: Optional[str] = "gpt-4o"
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    user: User
-    business: Optional[Business] = None
-
-# Utility Functions
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        token = credentials.credentials
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    
-    user = await db.users.find_one({"id": user_id})
-    if user is None:
-        raise credentials_exception
-    return User(**user)
-
-async def get_current_business(current_user: User = Depends(get_current_user)):
-    if not current_user.business_id:
+def business_public(business: BusinessRow | None) -> dict[str, Any] | None:
+    if business is None:
         return None
-    business = await db.businesses.find_one({"id": current_user.business_id})
-    return Business(**business) if business else None
+    return {"id": business.id, "name": business.name, "description": business.description,
+            "domain": business.domain, "logo_url": business.logo_url,
+            "primary_color": business.primary_color, "secondary_color": business.secondary_color,
+            "status": business.status, "owner_id": business.owner_id,
+            "settings": business.settings or {}, "created_at": business.created_at,
+            "approved_at": business.approved_at, "approved_by": business.approved_by}
 
-def require_role(allowed_roles: List[UserRole]):
-    def role_checker(current_user: User = Depends(get_current_user)):
-        if current_user.role not in allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not enough permissions"
-            )
-        return current_user
-    return role_checker
 
-# Authentication Routes
-@api_router.post("/auth/register-business", response_model=dict)
-async def register_business(business_data: BusinessCreate):
-    """Register a new business - requires Super Admin approval"""
-    # Check if email already exists
-    existing_user = await db.users.find_one({"email": business_data.owner_email})
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
-    
-    # Create business
-    business = Business(
-        name=business_data.name,
-        description=business_data.description,
-        domain=business_data.domain,
-        status=BusinessStatus.PENDING
-    )
-    await db.businesses.insert_one(business.dict())
-    
-    # Create business admin user
-    hashed_password = get_password_hash(business_data.owner_password)
-    user = User(
-        email=business_data.owner_email,
-        username=business_data.owner_username,
-        full_name=business_data.owner_name,
-        role=UserRole.BUSINESS_ADMIN,
-        business_id=business.id,
-        is_active=False  # Inactive until business is approved
-    )
-    user_dict = user.dict()
-    user_dict["hashed_password"] = hashed_password
-    await db.users.insert_one(user_dict)
-    
-    # Update business with owner ID
-    await db.businesses.update_one(
-        {"id": business.id},
-        {"$set": {"owner_id": user.id}}
-    )
-    
-    return {"message": "Business registration submitted for approval", "business_id": business.id}
+def issue_token(user: UserRow) -> str:
+    exp = datetime.now(timezone.utc) + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
+    return jwt.encode({"sub": user.id, "exp": exp}, SECRET_KEY, algorithm=ALGORITHM)
 
-@api_router.post("/auth/login", response_model=Token)
-async def login(user_credentials: UserLogin):
-    user = await db.users.find_one({"email": user_credentials.email})
-    if not user or not verify_password(user_credentials.password, user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    if not user["is_active"]:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Account is inactive - awaiting business approval"
-        )
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["id"]}, expires_delta=access_token_expires
-    )
-    
-    user_obj = User(**user)
-    business = None
-    if user_obj.business_id:
-        business_doc = await db.businesses.find_one({"id": user_obj.business_id})
-        if business_doc:
-            business = Business(**business_doc)
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user_obj,
-        "business": business
-    }
 
-# Super Admin Routes
-@api_router.get("/admin/businesses", response_model=List[Business])
-async def get_all_businesses(
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
-):
-    businesses = await db.businesses.find().to_list(1000)
-    return [Business(**business) for business in businesses]
+async def current_user(credentials: HTTPAuthorizationCredentials = Depends(security),
+                       db: AsyncSession = Depends(get_db)) -> UserRow:
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+    except JWTError as exc:
+        raise HTTPException(status_code=401, detail="Could not validate credentials") from exc
+    user = await db.get(UserRow, user_id) if user_id else None
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+    return user
 
-@api_router.post("/admin/businesses/{business_id}/approve")
-async def approve_business(
-    business_id: str,
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
-):
-    business = await db.businesses.find_one({"id": business_id})
+
+def require_super_admin(user: UserRow = Depends(current_user)) -> UserRow:
+    if user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+    return user
+
+
+async def current_business(user: UserRow, db: AsyncSession) -> BusinessRow:
+    if not user.business_id:
+        raise HTTPException(status_code=404, detail="Business not found for this account")
+    business = await db.get(BusinessRow, user.business_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    
-    # Update business status
-    await db.businesses.update_one(
-        {"id": business_id},
-        {
-            "$set": {
-                "status": BusinessStatus.APPROVED.value,
-                "approved_at": datetime.utcnow(),
-                "approved_by": current_user.id
-            }
-        }
-    )
-    
-    # Activate business admin user
-    await db.users.update_one(
-        {"business_id": business_id, "role": UserRole.BUSINESS_ADMIN.value},
-        {"$set": {"is_active": True}}
-    )
-    
+    return business
+
+
+@api.post("/auth/bootstrap-super-admin", status_code=201)
+async def bootstrap_super_admin(data: BootstrapAdmin, db: AsyncSession = Depends(get_db)):
+    """One-time Super Admin setup. Requires SUPERADMIN_BOOTSTRAP_TOKEN in server env."""
+    expected = os.environ.get("SUPERADMIN_BOOTSTRAP_TOKEN", "")
+    if not expected or not hmac.compare_digest(data.bootstrap_token, expected):
+        raise HTTPException(status_code=403, detail="Invalid or missing bootstrap token")
+    count = await db.scalar(select(func.count()).select_from(UserRow).where(UserRow.role == "super_admin"))
+    if count:
+        raise HTTPException(status_code=409, detail="Super Admin setup has already been completed")
+    user = UserRow(id=str(uuid.uuid4()), email=data.email.lower(), username=data.username,
+                   full_name=data.full_name, role="super_admin", business_id=None,
+                   hashed_password=pwd_context.hash(data.password), is_active=True)
+    db.add(user)
+    await db.commit()
+    return {"message": "Super Admin account created. You can now sign in."}
+
+
+@api.post("/auth/register-business", status_code=201)
+async def register_business(data: BusinessSignup, db: AsyncSession = Depends(get_db)):
+    existing = await db.scalar(select(UserRow).where(UserRow.email == data.owner_email.lower()))
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    business = BusinessRow(name=data.name, description=data.description, domain=data.domain, status="pending")
+    db.add(business)
+    await db.flush()
+    user = UserRow(email=data.owner_email.lower(), username=data.owner_username,
+                   full_name=data.owner_name, role="business_admin", business_id=business.id,
+                   hashed_password=pwd_context.hash(data.owner_password), is_active=False)
+    db.add(user)
+    await db.flush()
+    business.owner_id = user.id
+    await db.commit()
+    return {"message": "Business registration submitted for approval", "business_id": business.id}
+
+
+@api.post("/auth/login")
+async def login(data: LoginInput, db: AsyncSession = Depends(get_db)):
+    user = await db.scalar(select(UserRow).where(UserRow.email == data.email.lower()))
+    if not user or not pwd_context.verify(data.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="Account is inactive - awaiting business approval")
+    business = await db.get(BusinessRow, user.business_id) if user.business_id else None
+    return {"access_token": issue_token(user), "token_type": "bearer",
+            "user": user_public(user), "business": business_public(business)}
+
+
+@api.get("/auth/me")
+async def who_am_i(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await db.get(BusinessRow, user.business_id) if user.business_id else None
+    return {"user": user_public(user), "business": business_public(business)}
+
+
+@api.get("/admin/businesses")
+async def list_businesses(db: AsyncSession = Depends(get_db), _: UserRow = Depends(require_super_admin)):
+    rows = (await db.scalars(select(BusinessRow).order_by(BusinessRow.created_at.desc()))).all()
+    return [business_public(row) for row in rows]
+
+
+@api.post("/admin/businesses/{business_id}/approve")
+async def approve_business(business_id: str, db: AsyncSession = Depends(get_db), admin: UserRow = Depends(require_super_admin)):
+    business = await db.get(BusinessRow, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business.status = "approved"
+    business.approved_at = datetime.now(timezone.utc)
+    business.approved_by = admin.id
+    owner = await db.scalar(select(UserRow).where(UserRow.business_id == business_id, UserRow.role == "business_admin"))
+    if owner:
+        owner.is_active = True
+    await db.commit()
     return {"message": "Business approved successfully"}
 
-@api_router.post("/admin/businesses/{business_id}/reject")
-async def reject_business(
-    business_id: str,
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
-):
-    await db.businesses.update_one(
-        {"id": business_id},
-        {"$set": {"status": BusinessStatus.REJECTED.value}}
-    )
+
+@api.post("/admin/businesses/{business_id}/reject")
+async def reject_business(business_id: str, db: AsyncSession = Depends(get_db), _: UserRow = Depends(require_super_admin)):
+    business = await db.get(BusinessRow, business_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business.status = "rejected"
+    await db.commit()
     return {"message": "Business rejected"}
 
-# Business Management Routes
-@api_router.get("/business/profile", response_model=Business)
-async def get_business_profile(
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    return current_business
 
-@api_router.put("/business/profile", response_model=Business)
-async def update_business_profile(
-    updates: BusinessUpdate,
-    current_user: User = Depends(require_role([UserRole.BUSINESS_ADMIN])),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    update_data = {k: v for k, v in updates.dict().items() if v is not None}
-    if update_data:
-        await db.businesses.update_one(
-            {"id": current_business.id},
-            {"$set": update_data}
-        )
-    
-    updated_business = await db.businesses.find_one({"id": current_business.id})
-    return Business(**updated_business)
+@api.get("/business/profile")
+async def get_business_profile(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    return business_public(await current_business(user, db))
 
-# CRM Routes
-@api_router.post("/crm/contacts", response_model=Contact)
-async def create_contact(
-    contact_data: ContactCreate,
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    contact = Contact(
-        **contact_data.dict(),
-        business_id=current_business.id,
-        created_by=current_user.id
-    )
-    await db.contacts.insert_one(contact.dict())
-    return contact
 
-@api_router.get("/crm/contacts", response_model=List[Contact])
-async def get_contacts(
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    contacts = await db.contacts.find({"business_id": current_business.id}).to_list(1000)
-    return [Contact(**contact) for contact in contacts]
+@api.put("/business/profile")
+async def update_business_profile(data: BusinessUpdate, user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    if user.role != "business_admin":
+        raise HTTPException(status_code=403, detail="Business Admin access required")
+    business = await current_business(user, db)
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(business, key, value)
+    await db.commit()
+    await db.refresh(business)
+    return business_public(business)
 
-# AI Integration Routes
-@api_router.post("/ai/chat", response_model=dict)
-async def ai_chat(
-    chat_data: AIChatMessage,
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    """AI Chat endpoint - requires API keys to be configured"""
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    # Check if API keys are configured
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    
-    if not openai_key and not anthropic_key:
-        return {
-            "error": "AI services not configured",
-            "message": "Please add OPENAI_API_KEY or ANTHROPIC_API_KEY to environment variables"
-        }
-    
-    # For now, return a placeholder response
-    # When API keys are available, this will integrate with the AI service
-    return {
-        "response": "AI integration ready - please configure API keys in environment variables",
-        "session_id": chat_data.session_id,
-        "provider": chat_data.provider,
-        "model": chat_data.model
-    }
 
-@api_router.post("/ai/workflows", response_model=AIWorkflow)
-async def create_workflow(
-    workflow_data: AIWorkflowCreate,
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    workflow = AIWorkflow(
-        **workflow_data.dict(),
-        business_id=current_business.id,
-        created_by=current_user.id
-    )
-    await db.workflows.insert_one(workflow.dict())
-    return workflow
+@api.post("/crm/contacts", status_code=201)
+async def create_contact(data: ContactInput, user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    contact = ContactRow(business_id=business.id, created_by=user.id, **data.model_dump())
+    db.add(contact)
+    await db.commit()
+    await db.refresh(contact)
+    return {column.name: getattr(contact, column.name) for column in ContactRow.__table__.columns}
 
-@api_router.get("/ai/workflows", response_model=List[AIWorkflow])
-async def get_workflows(
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    workflows = await db.workflows.find({"business_id": current_business.id}).to_list(1000)
-    return [AIWorkflow(**workflow) for workflow in workflows]
 
-# Analytics Routes
-@api_router.get("/analytics/dashboard")
-async def get_dashboard_analytics(
-    current_user: User = Depends(get_current_user),
-    current_business: Business = Depends(get_current_business)
-):
-    if not current_business:
-        raise HTTPException(status_code=404, detail="Business not found")
-    
-    # Get business metrics
-    total_contacts = await db.contacts.count_documents({"business_id": current_business.id})
-    total_workflows = await db.workflows.count_documents({"business_id": current_business.id})
-    active_workflows = await db.workflows.count_documents({
-        "business_id": current_business.id,
-        "is_active": True
-    })
-    
-    return {
-        "total_contacts": total_contacts,
-        "total_workflows": total_workflows,
-        "active_workflows": active_workflows,
-        "business_status": current_business.status,
-        "business_name": current_business.name
-    }
+@api.get("/crm/contacts")
+async def get_contacts(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    rows = (await db.scalars(select(ContactRow).where(ContactRow.business_id == business.id))).all()
+    return [{column.name: getattr(row, column.name) for column in ContactRow.__table__.columns} for row in rows]
 
-# Health Check
-@api_router.get("/health")
-async def health_check():
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
 
-# Initialize Super Admin
-async def create_super_admin():
-    """Create initial super admin user"""
-    super_admin_email = "superadmin@platform.com"
-    existing_admin = await db.users.find_one({"email": super_admin_email})
-    
-    if not existing_admin:
-        hashed_password = get_password_hash("SuperAdmin@123")
-        super_admin = User(
-            email=super_admin_email,
-            username="superadmin",
-            full_name="Super Administrator",
-            role=UserRole.SUPER_ADMIN,
-            is_active=True
-        )
-        super_admin_dict = super_admin.dict()
-        super_admin_dict["hashed_password"] = hashed_password
-        await db.users.insert_one(super_admin_dict)
-        print("Super Admin created: superadmin@platform.com / SuperAdmin@123")
+@api.post("/ai/workflows", status_code=201)
+async def create_workflow(data: WorkflowInput, user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    row = WorkflowRow(business_id=business.id, created_by=user.id, **data.model_dump())
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return {column.name: getattr(row, column.name) for column in WorkflowRow.__table__.columns}
+
+
+@api.get("/ai/workflows")
+async def get_workflows(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    rows = (await db.scalars(select(WorkflowRow).where(WorkflowRow.business_id == business.id))).all()
+    return [{column.name: getattr(row, column.name) for column in WorkflowRow.__table__.columns} for row in rows]
+
+
+@api.get("/analytics/dashboard")
+async def analytics(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    contacts = await db.scalar(select(func.count()).select_from(ContactRow).where(ContactRow.business_id == business.id))
+    workflows = await db.scalar(select(func.count()).select_from(WorkflowRow).where(WorkflowRow.business_id == business.id))
+    active = await db.scalar(select(func.count()).select_from(WorkflowRow).where(WorkflowRow.business_id == business.id, WorkflowRow.is_active.is_(True)))
+    return {"total_contacts": contacts, "total_workflows": workflows, "active_workflows": active,
+            "business_status": business.status, "business_name": business.name}
+
+
+@api.get("/health")
+async def health(db: AsyncSession = Depends(get_db)):
+    await db.execute(select(1))
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
+
 
 @app.on_event("startup")
-async def startup_event():
-    await create_super_admin()
+async def startup():
+    await init_db()
+    # Optional deterministic demo tenant/data; enable with SEED_DEMO_DATA=true.
+    if os.environ.get("SEED_DEMO_DATA", "false").lower() == "true":
+        async with SessionLocal() as db:
+            demo = await db.scalar(select(BusinessRow).where(BusinessRow.domain == "demo.example"))
+            if not demo:
+                demo = BusinessRow(name="Demo Workspace", domain="demo.example", status="approved")
+                db.add(demo)
+                await db.flush()
+                admin = await db.scalar(select(UserRow).where(UserRow.email == "demo-admin@example.test"))
+                if not admin:
+                    admin = UserRow(email="demo-admin@example.test", username="demo-admin", full_name="Demo Admin",
+                                    role="business_admin", business_id=demo.id,
+                                    hashed_password=pwd_context.hash(str(uuid.uuid4())), is_active=False)
+                    db.add(admin)
+                    await db.flush()
+                    demo.owner_id = admin.id
+                for first, last, company in [("Alex", "Morgan", "Northwind"), ("Jamie", "Lee", "Contoso"), ("Taylor", "Reed", "Fabrikam")]:
+                    db.add(ContactRow(business_id=demo.id, created_by=admin.id, first_name=first, last_name=last,
+                                      company=company, status="new", tags=["demo"], custom_fields={}))
+                await db.commit()
 
-# Include the router
-app.include_router(api_router)
 
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+app.include_router(api)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
