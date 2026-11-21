@@ -1,908 +1,256 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, createContext, useContext } from 'react';
 import axios from 'axios';
+import {
+  Activity, BarChart3, BriefcaseBusiness, Check, ChevronLeft, ChevronRight,
+  CircleHelp, LayoutDashboard, LogOut, Menu, Plus, Search, Settings, Sparkles,
+  Trash2, Users, Workflow, X, Pencil, Filter, Mail, Phone,
+} from 'lucide-react';
 import './App.css';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 const API = `${BACKEND_URL}/api`;
-
-// Auth Context
-const AuthContext = createContext();
-
-const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+const AuthContext = createContext(null);
+const useAuth = () => useContext(AuthContext);
+const PAGE_SIZE = 10;
+const STATUSES = ['new', 'qualified', 'contacted', 'proposal', 'customer', 'lost'];
+const emptyContact = {
+  first_name: '', last_name: '', email: '', phone: '', company: '', position: '',
+  source: '', status: 'new', lead_score: 0, tags: [],
 };
 
-// Auth Provider
-const AuthProvider = ({ children }) => {
+function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // Verify token and get user data
-      fetchUserProfile();
-    } else {
-      setLoading(false);
-    }
+  const logout = useCallback(() => {
+    localStorage.removeItem('token');
+    delete axios.defaults.headers.common.Authorization;
+    setUser(null);
+    setBusiness(null);
   }, []);
 
-  const fetchUserProfile = async () => {
-    try {
-      const response = await axios.get(`${API}/business/profile`);
-      setBusiness(response.data);
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
       setLoading(false);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
-      logout();
+      return;
     }
-  };
+    axios.defaults.headers.common.Authorization = `Bearer ${token}`;
+    axios.get(`${API}/auth/me`)
+      .then(({ data }) => {
+        setUser(data.user);
+        setBusiness(data.business);
+      })
+      .catch(() => logout())
+      .finally(() => setLoading(false));
+  }, [logout]);
 
   const login = async (email, password) => {
     try {
-      const response = await axios.post(`${API}/auth/login`, { email, password });
-      const { access_token, user: userData, business: businessData } = response.data;
-      
-      localStorage.setItem('token', access_token);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
-      
-      setUser(userData);
-      setBusiness(businessData);
+      const { data } = await axios.post(`${API}/auth/login`, { email, password });
+      localStorage.setItem('token', data.access_token);
+      axios.defaults.headers.common.Authorization = `Bearer ${data.access_token}`;
+      setUser(data.user);
+      setBusiness(data.business);
       return { success: true };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Login failed' 
-      };
+      return { success: false, error: error.response?.data?.detail || 'Unable to sign in.' };
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('token');
-    delete axios.defaults.headers.common['Authorization'];
-    setUser(null);
-    setBusiness(null);
-  };
-
-  const registerBusiness = async (businessData) => {
+  const registerBusiness = async (form) => {
     try {
-      const response = await axios.post(`${API}/auth/register-business`, businessData);
-      return { success: true, data: response.data };
+      const { data } = await axios.post(`${API}/auth/register-business`, form);
+      return { success: true, data };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Registration failed' 
-      };
+      return { success: false, error: error.response?.data?.detail || 'Registration failed.' };
     }
   };
 
-  return (
-    <AuthContext.Provider value={{
-      user,
-      business,
-      loading,
-      login,
-      logout,
-      registerBusiness
-    }}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
+  return <AuthContext.Provider value={{ user, business, loading, login, logout, registerBusiness }}>{children}</AuthContext.Provider>;
+}
 
-// Components
-const LoginForm = ({ onToggle }) => {
+function LoginForm({ onRegister }) {
+  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+  const [busy, setBusy] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
     setError('');
-
     const result = await login(email, password);
-    if (!result.success) {
-      setError(result.error);
-    }
-    setLoading(false);
+    if (!result.success) setError(result.error);
+    setBusy(false);
   };
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 flex items-center justify-center p-4">
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8 w-full max-w-md border border-white/20">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Enterprise SaaS</h1>
-          <p className="text-blue-200">AI-Powered Business Automation</p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-blue-100 mb-2">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter your email"
-              required
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-blue-100 mb-2">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter your password"
-              required
-            />
-          </div>
-
-          {error && (
-            <div className="bg-red-500/20 border border-red-500/30 text-red-200 px-4 py-3 rounded-lg">
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-3 px-4 rounded-lg transition duration-200 disabled:opacity-50"
-          >
-            {loading ? 'Signing In...' : 'Sign In'}
-          </button>
+    <div className="min-h-screen flex items-center justify-center bg-slate-950 px-4 py-10">
+      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-white p-8 shadow-2xl">
+        <div className="mb-8"><div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-600 text-white"><BriefcaseBusiness size={24} /></div><h1 className="text-2xl font-bold text-slate-900">Welcome back</h1><p className="mt-1 text-sm text-slate-500">Sign in to your business workspace.</p></div>
+        <form className="space-y-5" onSubmit={submit}>
+          <label className="block text-sm font-medium text-slate-700">Email<input className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" /></label>
+          <label className="block text-sm font-medium text-slate-700">Password<input className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" /></label>
+          {error && <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+          <button disabled={busy} className="w-full rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-60">{busy ? 'Signing in…' : 'Sign in'}</button>
         </form>
-
-        <div className="mt-6 text-center">
-          <button
-            onClick={onToggle}
-            className="text-blue-300 hover:text-white transition duration-200"
-          >
-            Don't have a business account? Register here
-          </button>
-        </div>
-
-        <div className="mt-8 text-center">
-          <div className="text-xs text-blue-200 mb-2">Demo Credentials:</div>
-          <div className="text-xs text-blue-300">
-            <div>Super Admin: superadmin@platform.com / SuperAdmin@123</div>
-          </div>
-        </div>
+        <p className="mt-6 text-center text-sm text-slate-500">New to the platform? <button onClick={onRegister} className="font-semibold text-indigo-600 hover:text-indigo-700">Register a business</button></p>
       </div>
     </div>
   );
-};
+}
 
-const RegisterForm = ({ onToggle }) => {
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    domain: '',
-    owner_email: '',
-    owner_name: '',
-    owner_username: '',
-    owner_password: ''
-  });
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [loading, setLoading] = useState(false);
+function RegisterForm({ onBack }) {
   const { registerBusiness } = useAuth();
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    setSuccess('');
-
-    const result = await registerBusiness(formData);
-    if (result.success) {
-      setSuccess('Business registration submitted! Awaiting Super Admin approval.');
-      setFormData({
-        name: '',
-        description: '',
-        domain: '',
-        owner_email: '',
-        owner_name: '',
-        owner_username: '',
-        owner_password: ''
-      });
-    } else {
-      setError(result.error);
-    }
-    setLoading(false);
+  const [form, setForm] = useState({ name: '', description: '', domain: '', owner_email: '', owner_name: '', owner_username: '', owner_password: '' });
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const change = (e) => setForm((current) => ({ ...current, [e.target.name]: e.target.value }));
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setError(''); setMessage('');
+    const result = await registerBusiness(form);
+    if (result.success) setMessage('Registration submitted. You can sign in once an administrator approves your business.');
+    else setError(result.error);
+    setBusy(false);
   };
+  return <div className="min-h-screen bg-slate-950 px-4 py-10"><form onSubmit={submit} className="mx-auto max-w-2xl rounded-3xl bg-white p-8 shadow-2xl"><button type="button" onClick={onBack} className="mb-5 text-sm font-semibold text-indigo-600">← Back to sign in</button><h1 className="text-2xl font-bold text-slate-900">Register your business</h1><p className="mb-7 mt-1 text-sm text-slate-500">Create a workspace and administrator account.</p><div className="grid gap-4 sm:grid-cols-2">{[['name','Business name'],['domain','Domain'],['owner_name','Owner full name'],['owner_username','Username'],['owner_email','Owner email'],['owner_password','Password']].map(([name,label]) => <label key={name} className="text-sm font-medium text-slate-700">{label}<input className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5" name={name} type={name.includes('password')?'password':name.includes('email')?'email':'text'} value={form[name]} onChange={change} required={!['domain'].includes(name)} /></label>)}</div><label className="mt-4 block text-sm font-medium text-slate-700">Description<textarea className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5" rows="3" name="description" value={form.description} onChange={change} /></label>{error && <p role="alert" className="mt-4 text-sm text-red-600">{error}</p>}{message && <p role="status" className="mt-4 text-sm text-emerald-700">{message}</p>}<button disabled={busy} className="mt-6 w-full rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white disabled:opacity-60">{busy?'Submitting…':'Submit registration'}</button></form></div>;
+}
 
-  const handleChange = (e) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex items-center justify-center p-4">
-      <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8 w-full max-w-2xl border border-white/20">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Register Your Business</h1>
-          <p className="text-blue-200">Join the Enterprise SaaS Platform</p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <label className="block text-sm font-medium text-blue-100 mb-2">Business Name</label>
-              <input
-                type="text"
-                name="name"
-                value={formData.name}
-                onChange={handleChange}
-                className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                placeholder="Your Business Name"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-blue-100 mb-2">Domain (Optional)</label>
-              <input
-                type="text"
-                name="domain"
-                value={formData.domain}
-                onChange={handleChange}
-                className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                placeholder="yourbusiness.com"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-blue-100 mb-2">Business Description</label>
-            <textarea
-              name="description"
-              value={formData.description}
-              onChange={handleChange}
-              rows="3"
-              className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              placeholder="Describe your business..."
-            />
-          </div>
-
-          <div className="border-t border-white/20 pt-6">
-            <h3 className="text-lg font-semibold text-white mb-4">Business Owner Details</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-medium text-blue-100 mb-2">Full Name</label>
-                <input
-                  type="text"
-                  name="owner_name"
-                  value={formData.owner_name}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  placeholder="John Doe"
-                  required
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-blue-100 mb-2">Username</label>
-                <input
-                  type="text"
-                  name="owner_username"
-                  value={formData.owner_username}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  placeholder="johndoe"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              <div>
-                <label className="block text-sm font-medium text-blue-100 mb-2">Email</label>
-                <input
-                  type="email"
-                  name="owner_email"
-                  value={formData.owner_email}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  placeholder="john@business.com"
-                  required
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-blue-100 mb-2">Password</label>
-                <input
-                  type="password"
-                  name="owner_password"
-                  value={formData.owner_password}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  placeholder="Strong password"
-                  required
-                />
-              </div>
-            </div>
-          </div>
-
-          {error && (
-            <div className="bg-red-500/20 border border-red-500/30 text-red-200 px-4 py-3 rounded-lg">
-              {error}
-            </div>
-          )}
-
-          {success && (
-            <div className="bg-green-500/20 border border-green-500/30 text-green-200 px-4 py-3 rounded-lg">
-              {success}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition duration-200 disabled:opacity-50"
-          >
-            {loading ? 'Registering...' : 'Register Business'}
-          </button>
-        </form>
-
-        <div className="mt-6 text-center">
-          <button
-            onClick={onToggle}
-            className="text-purple-300 hover:text-white transition duration-200"
-          >
-            Already have an account? Sign in here
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const SuperAdminDashboard = () => {
-  const [businesses, setBusinesses] = useState([]);
-  const [loading, setLoading] = useState(true);
+function SuperAdminDashboard() {
   const { logout } = useAuth();
-
-  useEffect(() => {
-    fetchBusinesses();
+  const [businesses, setBusinesses] = useState([]);
+  const [error, setError] = useState('');
+  const refresh = useCallback(async () => {
+    try { const { data } = await axios.get(`${API}/admin/businesses`); setBusinesses(data); setError(''); }
+    catch (e) { setError(e.response?.data?.detail || 'Could not load business applications.'); }
   }, []);
+  useEffect(() => { refresh(); }, [refresh]);
+  const act = async (id, action) => { try { await axios.post(`${API}/admin/businesses/${id}/${action}`); await refresh(); } catch (e) { setError(e.response?.data?.detail || `Could not ${action} business.`); } };
+  return <div className="min-h-screen bg-slate-50"><header className="flex items-center justify-between border-b bg-white px-6 py-4"><h1 className="font-bold text-slate-900">Platform administration</h1><button onClick={logout} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-600 hover:bg-slate-100"><LogOut size={16}/>Sign out</button></header><main className="mx-auto max-w-5xl px-4 py-10"><h2 className="text-2xl font-bold text-slate-900">Business applications</h2><p className="mb-6 mt-1 text-slate-500">Review and approve new workspaces.</p>{error&&<p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}<div className="space-y-3">{businesses.map((item)=><article key={item.id} className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border bg-white p-5"><div><h3 className="font-semibold text-slate-900">{item.name}</h3><p className="text-sm text-slate-500">{item.description || item.domain || 'No description'}</p><span className="mt-2 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs capitalize text-slate-600">{item.status}</span></div>{item.status==='pending'&&<div className="flex gap-2"><button onClick={()=>act(item.id,'approve')} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white">Approve</button><button onClick={()=>act(item.id,'reject')} className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700">Reject</button></div>}</article>)}{businesses.length===0&&<div className="rounded-2xl border border-dashed bg-white p-12 text-center text-slate-500">No business applications yet.</div>}</div></main></div>;
+}
 
-  const fetchBusinesses = async () => {
+function ContactModal({ contact, onClose, onSaved }) {
+  const [form, setForm] = useState(contact ? { ...emptyContact, ...contact } : { ...emptyContact });
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setError('');
+    const payload = { ...form, email: form.email.trim() || null, phone: form.phone.trim() || null, company: form.company.trim() || null, position: form.position.trim() || null, source: form.source.trim() || null, lead_score: Number(form.lead_score) };
     try {
-      const response = await axios.get(`${API}/admin/businesses`);
-      setBusinesses(response.data);
-    } catch (error) {
-      console.error('Error fetching businesses:', error);
-    } finally {
-      setLoading(false);
-    }
+      if (contact?.id) await axios.put(`${API}/crm/contacts/${contact.id}`, payload);
+      else await axios.post(`${API}/crm/contacts`, payload);
+      onSaved();
+    } catch (err) { setError(err.response?.data?.detail || 'Unable to save contact.'); }
+    finally { setBusy(false); }
   };
+  const inputClass = 'mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50';
+  return <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/50 p-4" onMouseDown={(e)=>{if(e.target===e.currentTarget)onClose();}}><section role="dialog" aria-modal="true" aria-labelledby="contact-dialog-title" className="my-auto w-full max-w-2xl rounded-2xl bg-white shadow-2xl"><div className="flex items-start justify-between border-b px-6 py-5"><div><h2 id="contact-dialog-title" className="text-xl font-bold text-slate-900">{contact?'Edit contact':'Add contact'}</h2><p className="mt-1 text-sm text-slate-500">Contact details, pipeline stage, and lead score.</p></div><button onClick={onClose} aria-label="Close" className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"><X size={20}/></button></div><form onSubmit={submit} className="p-6"><div className="grid gap-4 sm:grid-cols-2">{[['first_name','First name'],['last_name','Last name'],['email','Email'],['phone','Phone'],['company','Company'],['position','Position'],['source','Source']].map(([key,label])=><label key={key} className="text-sm font-medium text-slate-700">{label}<input className={inputClass} type={key==='email'?'email':'text'} value={form[key]||''} onChange={(e)=>set(key,e.target.value)} required={key==='first_name'||key==='last_name'} /></label>)}<label className="text-sm font-medium text-slate-700">Pipeline status<select className={inputClass} value={form.status} onChange={(e)=>set('status',e.target.value)}>{STATUSES.map((status)=><option key={status} value={status}>{status[0].toUpperCase()+status.slice(1)}</option>)}</select></label><label className="text-sm font-medium text-slate-700">Lead score <span className="font-normal text-slate-400">(0–100)</span><input className={inputClass} type="number" min="0" max="100" value={form.lead_score} onChange={(e)=>set('lead_score',e.target.value)} /></label></div>{error&&<p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}<div className="mt-6 flex justify-end gap-3 border-t pt-5"><button type="button" onClick={onClose} className="rounded-xl border px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button><button disabled={busy} className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">{busy?'Saving…':contact?'Save changes':'Create contact'}</button></div></form></section></div>;
+}
 
-  const handleBusinessAction = async (businessId, action) => {
-    try {
-      await axios.post(`${API}/admin/businesses/${businessId}/${action}`);
-      fetchBusinesses(); // Refresh the list
-    } catch (error) {
-      console.error(`Error ${action} business:`, error);
-    }
-  };
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'pending': return 'bg-yellow-100 text-yellow-800';
-      case 'approved': return 'bg-green-100 text-green-800';
-      case 'rejected': return 'bg-red-100 text-red-800';
-      case 'suspended': return 'bg-gray-100 text-gray-800';
-      default: return 'bg-gray-100 text-gray-800';
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <h1 className="text-xl font-semibold text-gray-900">Super Admin Dashboard</h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-500">Platform Administrator</span>
-              <button
-                onClick={logout}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          <div className="mb-6">
-            <h2 className="text-2xl font-bold text-gray-900">Business Applications</h2>
-            <p className="mt-1 text-sm text-gray-600">
-              Manage business registrations and approvals
-            </p>
-          </div>
-
-          <div className="bg-white shadow overflow-hidden sm:rounded-md">
-            <ul className="divide-y divide-gray-200">
-              {businesses.map((business) => (
-                <li key={business.id} className="px-6 py-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center">
-                        <div className="flex-1">
-                          <h3 className="text-lg font-medium text-gray-900 truncate">
-                            {business.name}
-                          </h3>
-                          <p className="text-sm text-gray-500">{business.description}</p>
-                          {business.domain && (
-                            <p className="text-sm text-blue-600">{business.domain}</p>
-                          )}
-                          <p className="text-xs text-gray-400 mt-1">
-                            Created: {new Date(business.created_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="ml-4">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(business.status)}`}>
-                            {business.status.charAt(0).toUpperCase() + business.status.slice(1)}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="ml-6 flex space-x-2">
-                      {business.status === 'pending' && (
-                        <>
-                          <button
-                            onClick={() => handleBusinessAction(business.id, 'approve')}
-                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm font-medium"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleBusinessAction(business.id, 'reject')}
-                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm font-medium"
-                          >
-                            Reject
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {businesses.length === 0 && (
-              <div className="text-center py-12">
-                <p className="text-gray-500">No business applications yet.</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </main>
-    </div>
-  );
-};
-
-const BusinessDashboard = () => {
-  const [analytics, setAnalytics] = useState(null);
+function CRMPage() {
   const [contacts, setContacts] = useState([]);
-  const [workflows, setWorkflows] = useState([]);
-  const [activeTab, setActiveTab] = useState('overview');
-  const { user, business, logout } = useAuth();
+  const [query, setQuery] = useState('');
+  const [status, setStatus] = useState('all');
+  const [source, setSource] = useState('all');
+  const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [modal, setModal] = useState(null);
+  const [notice, setNotice] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
-  useEffect(() => {
-    fetchAnalytics();
-    fetchContacts();
-    fetchWorkflows();
-  }, []);
-
-  const fetchAnalytics = async () => {
+  const fetchContacts = useCallback(async () => {
+    setLoading(true); setError('');
     try {
-      const response = await axios.get(`${API}/analytics/dashboard`);
-      setAnalytics(response.data);
-    } catch (error) {
-      console.error('Error fetching analytics:', error);
-    }
+      const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE };
+      if (query.trim()) params.q = query.trim();
+      if (status !== 'all') params.status = status;
+      if (source !== 'all') params.source = source;
+      const { data } = await axios.get(`${API}/crm/contacts`, { params });
+      setContacts(data);
+    } catch (e) { setContacts([]); setError(e.response?.data?.detail || 'Could not load contacts. Please try again.'); }
+    finally { setLoading(false); }
+  }, [page, query, status, source]);
+
+  useEffect(() => { const timer = setTimeout(fetchContacts, query ? 250 : 0); return () => clearTimeout(timer); }, [fetchContacts, query]);
+  useEffect(() => { setPage(0); }, [status, source]);
+
+  const sources = useMemo(() => [...new Set(contacts.map((contact) => contact.source).filter(Boolean))].sort(), [contacts]);
+  const saveComplete = async () => { setModal(null); setNotice('Contact saved successfully.'); await fetchContacts(); };
+  const removeContact = async (contact) => {
+    try { await axios.delete(`${API}/crm/contacts/${contact.id}`); setConfirmDelete(null); setNotice('Contact deleted.'); await fetchContacts(); }
+    catch (e) { setError(e.response?.data?.detail || 'Could not delete contact.'); setConfirmDelete(null); }
+  };
+  const updateScore = async (contact, value) => {
+    const score = Math.max(0, Math.min(100, Number(value)));
+    try { await axios.patch(`${API}/crm/contacts/${contact.id}`, { lead_score: score }); setContacts((rows)=>rows.map((row)=>row.id===contact.id?{...row,lead_score:score}:row)); }
+    catch (e) { setError(e.response?.data?.detail || 'Could not update lead score.'); }
   };
 
-  const fetchContacts = async () => {
-    try {
-      const response = await axios.get(`${API}/crm/contacts`);
-      setContacts(response.data);
-    } catch (error) {
-      console.error('Error fetching contacts:', error);
-    }
-  };
-
-  const fetchWorkflows = async () => {
-    try {
-      const response = await axios.get(`${API}/ai/workflows`);
-      setWorkflows(response.data);
-    } catch (error) {
-      console.error('Error fetching workflows:', error);
-    }
-  };
-
-  const getRoleColor = (role) => {
-    switch (role) {
-      case 'business_admin': return 'bg-purple-100 text-purple-800';
-      case 'hr_manager': return 'bg-blue-100 text-blue-800';
-      case 'sales_manager': return 'bg-green-100 text-green-800';
-      case 'sales_executive': return 'bg-orange-100 text-orange-800';
-      default: return 'bg-gray-100 text-gray-800';
-    }
-  };
-
-  const formatRole = (role) => {
-    return role.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <h1 className="text-xl font-semibold text-gray-900">
-                {business?.name || 'Business Dashboard'}
-              </h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getRoleColor(user?.role)}`}>
-                {formatRole(user?.role || '')}
-              </span>
-              <span className="text-sm text-gray-500">{user?.full_name}</span>
-              <button
-                onClick={logout}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
-
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          {/* Tab Navigation */}
-          <div className="border-b border-gray-200 mb-6">
-            <nav className="-mb-px flex space-x-8">
-              {['overview', 'crm', 'ai-automation', 'analytics'].map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                    activeTab === tab
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  {tab.charAt(0).toUpperCase() + tab.slice(1).replace('-', ' ')}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Overview Tab */}
-          {activeTab === 'overview' && (
-            <div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                <div className="bg-white overflow-hidden shadow rounded-lg">
-                  <div className="p-5">
-                    <div className="flex items-center">
-                      <div className="flex-shrink-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-md flex items-center justify-center">
-                          <span className="text-white font-semibold">C</span>
-                        </div>
-                      </div>
-                      <div className="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt className="text-sm font-medium text-gray-500 truncate">Total Contacts</dt>
-                          <dd className="text-lg font-medium text-gray-900">{analytics?.total_contacts || 0}</dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white overflow-hidden shadow rounded-lg">
-                  <div className="p-5">
-                    <div className="flex items-center">
-                      <div className="flex-shrink-0">
-                        <div className="w-8 h-8 bg-green-500 rounded-md flex items-center justify-center">
-                          <span className="text-white font-semibold">W</span>
-                        </div>
-                      </div>
-                      <div className="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt className="text-sm font-medium text-gray-500 truncate">AI Workflows</dt>
-                          <dd className="text-lg font-medium text-gray-900">{analytics?.total_workflows || 0}</dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-white overflow-hidden shadow rounded-lg">
-                  <div className="p-5">
-                    <div className="flex items-center">
-                      <div className="flex-shrink-0">
-                        <div className="w-8 h-8 bg-purple-500 rounded-md flex items-center justify-center">
-                          <span className="text-white font-semibold">A</span>
-                        </div>
-                      </div>
-                      <div className="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt className="text-sm font-medium text-gray-500 truncate">Active Workflows</dt>
-                          <dd className="text-lg font-medium text-gray-900">{analytics?.active_workflows || 0}</dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-white shadow rounded-lg p-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-4">Welcome to Your Enterprise SaaS Platform</h3>
-                <div className="prose text-gray-600">
-                  <p>You're now part of the most advanced AI-powered business automation platform. Here's what you can do:</p>
-                  <ul className="mt-4 space-y-2">
-                    <li>• Manage unlimited contacts with AI-powered lead scoring</li>
-                    <li>• Create automated workflows for sales, marketing, and operations</li>
-                    <li>• Generate contracts and invoices with AI assistance</li>
-                    <li>• Track comprehensive business analytics and insights</li>
-                    <li>• White-label the platform with your own branding</li>
-                  </ul>
-                  <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-                    <p className="text-sm text-yellow-800">
-                      <strong>Note:</strong> AI features require API keys to be configured. Contact your administrator to enable AI automation.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* CRM Tab */}
-          {activeTab === 'crm' && (
-            <div>
-              <div className="bg-white shadow rounded-lg">
-                <div className="px-6 py-4 border-b border-gray-200">
-                  <h3 className="text-lg font-medium text-gray-900">Contact Management</h3>
-                </div>
-                <div className="p-6">
-                  {contacts.length === 0 ? (
-                    <div className="text-center py-8">
-                      <p className="text-gray-500">No contacts yet. Start building your customer database!</p>
-                      <button className="mt-4 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
-                        Add First Contact
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {contacts.map((contact) => (
-                        <div key={contact.id} className="border border-gray-200 rounded-lg p-4">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <h4 className="font-medium text-gray-900">
-                                {contact.first_name} {contact.last_name}
-                              </h4>
-                              {contact.email && (
-                                <p className="text-sm text-gray-600">{contact.email}</p>
-                              )}
-                              {contact.company && (
-                                <p className="text-sm text-gray-500">{contact.company}</p>
-                              )}
-                            </div>
-                            <div className="text-sm text-gray-500">
-                              Score: {contact.lead_score}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* AI Automation Tab */}
-          {activeTab === 'ai-automation' && (
-            <div>
-              <div className="bg-white shadow rounded-lg">
-                <div className="px-6 py-4 border-b border-gray-200">
-                  <h3 className="text-lg font-medium text-gray-900">AI Workflows & Automation</h3>
-                </div>
-                <div className="p-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                      <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
-                        <span className="text-blue-600 font-bold">AI</span>
-                      </div>
-                      <h4 className="font-medium text-gray-900 mb-2">Smart Lead Scoring</h4>
-                      <p className="text-sm text-gray-600 mb-4">AI-powered lead qualification and scoring</p>
-                      <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium">
-                        Set Up
-                      </button>
-                    </div>
-
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                      <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-4">
-                        <span className="text-green-600 font-bold">📧</span>
-                      </div>
-                      <h4 className="font-medium text-gray-900 mb-2">Email Automation</h4>
-                      <p className="text-sm text-gray-600 mb-4">Automated email sequences and follow-ups</p>
-                      <button className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm font-medium">
-                        Create
-                      </button>
-                    </div>
-
-                    <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                      <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-4">
-                        <span className="text-purple-600 font-bold">📄</span>
-                      </div>
-                      <h4 className="font-medium text-gray-900 mb-2">Contract Generation</h4>
-                      <p className="text-sm text-gray-600 mb-4">AI-generated contracts and agreements</p>
-                      <button className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-medium">
-                        Generate
-                      </button>
-                    </div>
-                  </div>
-
-                  {workflows.length > 0 && (
-                    <div className="mt-8">
-                      <h4 className="font-medium text-gray-900 mb-4">Active Workflows</h4>
-                      <div className="space-y-4">
-                        {workflows.map((workflow) => (
-                          <div key={workflow.id} className="border border-gray-200 rounded-lg p-4">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <h5 className="font-medium text-gray-900">{workflow.name}</h5>
-                                <p className="text-sm text-gray-600">{workflow.description}</p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  Trigger: {workflow.trigger_type}
-                                </p>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <span className={`px-2 py-1 text-xs rounded-full ${
-                                  workflow.is_active 
-                                    ? 'bg-green-100 text-green-800' 
-                                    : 'bg-gray-100 text-gray-800'
-                                }`}>
-                                  {workflow.is_active ? 'Active' : 'Inactive'}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Analytics Tab */}
-          {activeTab === 'analytics' && (
-            <div>
-              <div className="bg-white shadow rounded-lg p-6">
-                <h3 className="text-lg font-medium text-gray-900 mb-6">Business Analytics</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div>
-                    <h4 className="font-medium text-gray-900 mb-4">Performance Metrics</h4>
-                    <div className="space-y-4">
-                      <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                        <span className="text-sm font-medium text-gray-700">Total Contacts</span>
-                        <span className="text-lg font-bold text-blue-600">{analytics?.total_contacts || 0}</span>
-                      </div>
-                      <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                        <span className="text-sm font-medium text-gray-700">Active Workflows</span>
-                        <span className="text-lg font-bold text-green-600">{analytics?.active_workflows || 0}</span>
-                      </div>
-                      <div className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                        <span className="text-sm font-medium text-gray-700">Business Status</span>
-                        <span className={`px-2 py-1 text-xs rounded-full ${
-                          analytics?.business_status === 'approved' 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-yellow-100 text-yellow-800'
-                        }`}>
-                          {analytics?.business_status || 'Unknown'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900 mb-4">Quick Actions</h4>
-                    <div className="space-y-3">
-                      <button className="w-full text-left p-3 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors">
-                        <div className="font-medium text-blue-900">Generate Report</div>
-                        <div className="text-sm text-blue-700">Export business analytics</div>
-                      </button>
-                      <button className="w-full text-left p-3 bg-green-50 hover:bg-green-100 rounded-lg transition-colors">
-                        <div className="font-medium text-green-900">AI Insights</div>
-                        <div className="text-sm text-green-700">Get AI-powered recommendations</div>
-                      </button>
-                      <button className="w-full text-left p-3 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors">
-                        <div className="font-medium text-purple-900">Performance Review</div>
-                        <div className="text-sm text-purple-700">Analyze business performance</div>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+  return <div>
+    <div className="mb-7 flex flex-wrap items-end justify-between gap-4"><div><div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-600"><Users size={15}/> Customer relationships</div><h1 className="text-3xl font-bold tracking-tight text-slate-900">Contacts</h1><p className="mt-1 text-sm text-slate-500">Manage your leads and customer relationships in one place.</p></div><button onClick={()=>setModal({})} className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"><Plus size={17}/> Add contact</button></div>
+    <div className="mb-5 grid gap-4 sm:grid-cols-3"><StatCard label="Contacts on this page" value={contacts.length} icon={<Users size={18}/>} /><StatCard label="Qualified leads" value={contacts.filter((item)=>item.status==='qualified').length} icon={<Check size={18}/>} /><StatCard label="Customers" value={contacts.filter((item)=>item.status==='customer').length} icon={<BriefcaseBusiness size={18}/>} /></div>
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-col gap-3 border-b border-slate-100 p-4 lg:flex-row lg:items-center"><div className="relative min-w-0 flex-1"><Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/><input aria-label="Search contacts" value={query} onChange={(e)=>{setQuery(e.target.value);setPage(0);}} placeholder="Search name, email, company, phone…" className="w-full rounded-xl border border-slate-200 py-2.5 pl-10 pr-3 text-sm outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-50"/></div><div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 text-slate-400"><Filter size={15}/><select aria-label="Filter by status" className="bg-transparent py-2.5 text-sm text-slate-700 outline-none" value={status} onChange={(e)=>{setStatus(e.target.value);setPage(0);}}><option value="all">All statuses</option>{STATUSES.map((item)=><option key={item} value={item}>{item[0].toUpperCase()+item.slice(1)}</option>)}</select></label><select aria-label="Filter by source" className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-indigo-500" value={source} onChange={(e)=>{setSource(e.target.value);setPage(0);}}><option value="all">All sources</option>{sources.map((item)=><option key={item} value={item}>{item}</option>)}</select></div></div>
+      {notice&&<div role="status" className="mx-4 mt-4 flex items-center justify-between rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800"><span>{notice}</span><button aria-label="Dismiss message" onClick={()=>setNotice('')}><X size={16}/></button></div>}{error&&<div role="alert" className="mx-4 mt-4 flex items-center justify-between rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"><span>{error}</span><button aria-label="Dismiss error" onClick={()=>setError('')}><X size={16}/></button></div>}
+      <div className="overflow-x-auto"><table className="w-full min-w-[780px] text-left"><thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Contact</th><th className="px-5 py-3">Company</th><th className="px-5 py-3">Source</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Lead score</th><th className="px-5 py-3 text-right">Actions</th></tr></thead><tbody className="divide-y divide-slate-100">{loading?<tr><td colSpan="6" className="px-5 py-14 text-center text-sm text-slate-500"><span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent align-middle"/> <span className="ml-2">Loading contacts…</span></td></tr>:contacts.map((contact)=><tr key={contact.id} className="transition hover:bg-slate-50/70"><td className="px-5 py-4"><div className="font-semibold text-slate-900">{contact.first_name} {contact.last_name}</div><div className="mt-1 flex flex-col gap-1 text-xs text-slate-500 sm:flex-row sm:gap-3">{contact.email&&<span className="inline-flex items-center gap-1"><Mail size={12}/>{contact.email}</span>}{contact.phone&&<span className="inline-flex items-center gap-1"><Phone size={12}/>{contact.phone}</span>}</div></td><td className="px-5 py-4"><div className="text-sm text-slate-700">{contact.company||'—'}</div>{contact.position&&<div className="text-xs text-slate-400">{contact.position}</div>}</td><td className="px-5 py-4 text-sm text-slate-600">{contact.source||'—'}</td><td className="px-5 py-4"><span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium capitalize ${statusStyle(contact.status)}`}>{contact.status||'new'}</span></td><td className="px-5 py-4"><div className="flex items-center gap-2"><div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-indigo-500" style={{width:`${contact.lead_score||0}%`}}/></div><input aria-label={`Lead score for ${contact.first_name} ${contact.last_name}`} className="w-12 rounded-md border border-transparent bg-transparent px-1 py-1 text-sm font-semibold text-slate-700 outline-none hover:border-slate-200 focus:border-indigo-400" type="number" min="0" max="100" value={contact.lead_score||0} onChange={(e)=>setContacts((rows)=>rows.map((row)=>row.id===contact.id?{...row,lead_score:e.target.value}:row))} onBlur={(e)=>updateScore(contact,e.target.value)} onKeyDown={(e)=>{if(e.key==='Enter')e.currentTarget.blur();}}/></div></td><td className="px-5 py-4"><div className="flex justify-end gap-1"><button aria-label={`Edit ${contact.first_name} ${contact.last_name}`} onClick={()=>setModal(contact)} className="rounded-lg p-2 text-slate-500 hover:bg-indigo-50 hover:text-indigo-700"><Pencil size={16}/></button><button aria-label={`Delete ${contact.first_name} ${contact.last_name}`} onClick={()=>setConfirmDelete(contact)} className="rounded-lg p-2 text-slate-500 hover:bg-rose-50 hover:text-rose-700"><Trash2 size={16}/></button></div></td></tr>)}{!loading&&contacts.length===0&&<tr><td colSpan="6" className="px-5 py-16 text-center"><div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600"><Users size={23}/></div><p className="font-semibold text-slate-800">No contacts found</p><p className="mt-1 text-sm text-slate-500">Try changing your filters or add your first contact.</p><button onClick={()=>setModal({})} className="mt-4 text-sm font-semibold text-indigo-600">Add a contact</button></td></tr>}</tbody></table></div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3"><p className="text-sm text-slate-500">Page {page+1} · Showing {contacts.length} contact{contacts.length===1?'':'s'}</p><div className="flex gap-2"><button disabled={page===0||loading} onClick={()=>setPage((p)=>Math.max(0,p-1))} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"><ChevronLeft size={16}/>Previous</button><button disabled={contacts.length<PAGE_SIZE||loading} onClick={()=>setPage((p)=>p+1)} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next<ChevronRight size={16}/></button></div></div>
     </div>
-  );
-};
+    {modal&&<ContactModal contact={modal.id?modal:null} onClose={()=>setModal(null)} onSaved={saveComplete}/>}
+    {confirmDelete&&<div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4"><section role="alertdialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-rose-50 text-rose-600"><Trash2 size={20}/></div><h2 className="text-lg font-bold text-slate-900">Delete contact?</h2><p className="mt-2 text-sm text-slate-500">This will permanently remove {confirmDelete.first_name} {confirmDelete.last_name} from your contacts.</p><div className="mt-6 flex justify-end gap-3"><button onClick={()=>setConfirmDelete(null)} className="rounded-xl border px-4 py-2 text-sm font-semibold text-slate-600">Cancel</button><button onClick={()=>removeContact(confirmDelete)} className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white">Delete contact</button></div></section></div>}
+  </div>;
+}
 
-// Main App Component
-const App = () => {
-  const [showLogin, setShowLogin] = useState(true);
+function statusStyle(status) {
+  return ({new:'bg-sky-50 text-sky-700',qualified:'bg-violet-50 text-violet-700',contacted:'bg-amber-50 text-amber-700',proposal:'bg-indigo-50 text-indigo-700',customer:'bg-emerald-50 text-emerald-700',lost:'bg-rose-50 text-rose-700'})[status] || 'bg-slate-100 text-slate-600';
+}
 
-  return (
-    <AuthProvider>
-      <AuthenticatedApp showLogin={showLogin} setShowLogin={setShowLogin} />
-    </AuthProvider>
-  );
-};
+function StatCard({ label, value, icon }) {
+  return <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">{icon}</div><div><p className="text-xs font-medium text-slate-500">{label}</p><p className="mt-0.5 text-xl font-bold text-slate-900">{value}</p></div></div>;
+}
 
-const AuthenticatedApp = ({ showLogin, setShowLogin }) => {
+const navigation = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'crm', label: 'CRM & Contacts', icon: Users },
+  { id: 'ai-automation', label: 'AI Automation', icon: Workflow },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+];
+
+function PlaceholderPage({ page }) {
+  const content = {
+    overview: { title: 'Workspace overview', description: 'Your business workspace is ready. Jump into contacts to manage leads and customers.' },
+    'ai-automation': { title: 'AI Automation', description: 'Create and monitor workflows for your business.' },
+    analytics: { title: 'Analytics', description: 'Business performance and activity at a glance.' },
+  }[page];
+  const [analytics, setAnalytics] = useState(null);
+  const [workflows, setWorkflows] = useState([]);
+  useEffect(() => {
+    if (page === 'overview' || page === 'analytics') axios.get(`${API}/analytics/dashboard`).then(({data})=>setAnalytics(data)).catch(()=>{});
+    if (page === 'ai-automation') axios.get(`${API}/ai/workflows`).then(({data})=>setWorkflows(data)).catch(()=>{});
+  }, [page]);
+  return <div><div className="mb-7"><div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-indigo-600"><Sparkles size={15}/> Workspace</div><h1 className="text-3xl font-bold text-slate-900">{content.title}</h1><p className="mt-1 text-sm text-slate-500">{content.description}</p></div>{(page==='overview'||page==='analytics')&&<div className="grid gap-4 sm:grid-cols-3"><StatCard label="Total contacts" value={analytics?.total_contacts??'—'} icon={<Users size={18}/>} /><StatCard label="Workflows" value={analytics?.total_workflows??'—'} icon={<Workflow size={18}/>} /><StatCard label="Active workflows" value={analytics?.active_workflows??'—'} icon={<Activity size={18}/>} /></div>}{page==='ai-automation'&&<div className="rounded-2xl border bg-white p-6"><h2 className="font-semibold text-slate-900">Your workflows</h2>{workflows.length?<div className="mt-4 space-y-3">{workflows.map((workflow)=><div key={workflow.id} className="rounded-xl border p-4"><p className="font-medium text-slate-900">{workflow.name}</p><p className="mt-1 text-sm text-slate-500">{workflow.description||'No description'} · {workflow.trigger_type}</p></div>)}</div>:<p className="mt-3 text-sm text-slate-500">No workflows yet. Workflow creation will be added in the AI Automation module phase.</p>}</div>}</div>;
+}
+
+function BusinessDashboard() {
+  const { user, business, logout } = useAuth();
+  const [activePage, setActivePage] = useState('overview');
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const initials = (user?.full_name||'U').split(' ').map((part)=>part[0]).slice(0,2).join('').toUpperCase();
+  const currentNav = navigation.find((item)=>item.id===activePage);
+  return <div className="min-h-screen bg-slate-50 text-slate-900"><aside className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-slate-800 bg-slate-950 text-white transition-transform lg:translate-x-0 ${mobileOpen?'translate-x-0':'-translate-x-full'}`}><div className="flex h-20 items-center gap-3 border-b border-white/10 px-5"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500"><BriefcaseBusiness size={20}/></div><div className="min-w-0"><p className="truncate text-sm font-bold">{business?.name||'Workspace'}</p><p className="text-xs text-slate-400">Enterprise workspace</p></div><button className="ml-auto rounded-lg p-1 text-slate-400 hover:bg-white/10 lg:hidden" onClick={()=>setMobileOpen(false)} aria-label="Close navigation"><X size={18}/></button></div><div className="px-4 pt-6"><p className="px-3 text-[10px] font-bold uppercase tracking-[.18em] text-slate-500">Workspace</p><nav className="mt-3 space-y-1">{navigation.map(({id,label,icon:Icon})=><button key={id} onClick={()=>{setActivePage(id);setMobileOpen(false);}} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition ${activePage===id?'bg-indigo-500/15 text-indigo-300':'text-slate-400 hover:bg-white/5 hover:text-white'}`}><Icon size={18}/>{label}{id==='crm'&&<span className="ml-auto rounded-md bg-white/10 px-1.5 py-0.5 text-[10px]">CRM</span>}</button>)}</nav></div><div className="mt-auto border-t border-white/10 p-4"><button className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-400 hover:bg-white/5 hover:text-white"><Settings size={17}/>Settings</button><button className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-slate-400 hover:bg-white/5 hover:text-white"><CircleHelp size={17}/>Help & support</button><div className="mt-4 flex items-center gap-3 border-t border-white/10 pt-4"><div className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-500 text-xs font-bold">{initials}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{user?.full_name}</p><p className="truncate text-xs capitalize text-slate-500">{(user?.role||'').replaceAll('_',' ')}</p></div><button onClick={logout} title="Sign out" className="rounded-lg p-2 text-slate-400 hover:bg-white/10 hover:text-white"><LogOut size={17}/></button></div></div></aside><div className="lg:pl-64"><header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur sm:px-7"><div className="flex items-center gap-3"><button className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 lg:hidden" onClick={()=>setMobileOpen(true)} aria-label="Open navigation"><Menu size={20}/></button><div className="text-sm text-slate-400">Workspace <span className="mx-2">/</span><span className="font-semibold text-slate-800">{currentNav?.label}</span></div></div><div className="flex items-center gap-3"><span className="hidden text-sm text-slate-500 sm:inline">{user?.full_name}</span><div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-bold text-indigo-700">{initials}</div></div></header><main className="mx-auto max-w-7xl p-4 sm:p-7">{activePage==='crm'?<CRMPage/>:<PlaceholderPage page={activePage}/>}</main></div>{mobileOpen&&<button aria-label="Close navigation overlay" onClick={()=>setMobileOpen(false)} className="fixed inset-0 z-30 bg-slate-950/40 lg:hidden"/>}</div>;
+}
+
+function AuthenticatedApp() {
   const { user, loading } = useAuth();
+  const [register, setRegister] = useState(false);
+  if (loading) return <div className="flex min-h-screen items-center justify-center bg-slate-950 text-white"><span className="h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent"/></div>;
+  if (!user) return register ? <RegisterForm onBack={()=>setRegister(false)}/> : <LoginForm onRegister={()=>setRegister(true)}/>;
+  if (user.role==='super_admin') return <SuperAdminDashboard/>;
+  return <BusinessDashboard/>;
+}
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-900 to-purple-900 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
-          <p className="text-white">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return showLogin ? (
-      <LoginForm onToggle={() => setShowLogin(false)} />
-    ) : (
-      <RegisterForm onToggle={() => setShowLogin(true)} />
-    );
-  }
-
-  // Route based on user role
-  if (user.role === 'super_admin') {
-    return <SuperAdminDashboard />;
-  } else {
-    return <BusinessDashboard />;
-  }
-};
-
-export default App;
+export default function App() {
+  return <AuthProvider><AuthenticatedApp/></AuthProvider>;
+}

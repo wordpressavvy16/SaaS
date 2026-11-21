@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import BusinessRow, ContactRow, SessionLocal, UserRow, WorkflowRow, init_db
@@ -60,15 +60,32 @@ class LoginInput(BaseModel):
 
 
 class ContactInput(BaseModel):
-    first_name: str
-    last_name: str
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
     email: EmailStr | None = None
-    phone: str | None = None
-    company: str | None = None
-    position: str | None = None
-    source: str | None = None
+    phone: str | None = Field(default=None, max_length=80)
+    company: str | None = Field(default=None, max_length=255)
+    position: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=255)
     tags: list[str] = Field(default_factory=list)
     custom_fields: dict[str, Any] = Field(default_factory=dict)
+    lead_score: int = Field(default=0, ge=0, le=100)
+    status: str = Field(default="new", min_length=1, max_length=40)
+
+
+class ContactUpdate(BaseModel):
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, min_length=1, max_length=120)
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, max_length=80)
+    company: str | None = Field(default=None, max_length=255)
+    position: str | None = Field(default=None, max_length=255)
+    source: str | None = Field(default=None, max_length=255)
+    tags: list[str] | None = None
+    custom_fields: dict[str, Any] | None = None
+    lead_score: int | None = Field(default=None, ge=0, le=100)
+    status: str | None = Field(default=None, min_length=1, max_length=40)
+    assigned_to: str | None = None
 
 
 class WorkflowInput(BaseModel):
@@ -110,6 +127,10 @@ def business_public(business: BusinessRow | None) -> dict[str, Any] | None:
             "status": business.status, "owner_id": business.owner_id,
             "settings": business.settings or {}, "created_at": business.created_at,
             "approved_at": business.approved_at, "approved_by": business.approved_by}
+
+
+def contact_public(contact: ContactRow) -> dict[str, Any]:
+    return {column.name: getattr(contact, column.name) for column in ContactRow.__table__.columns}
 
 
 def issue_token(user: UserRow) -> str:
@@ -253,14 +274,62 @@ async def create_contact(data: ContactInput, user: UserRow = Depends(current_use
     db.add(contact)
     await db.commit()
     await db.refresh(contact)
-    return {column.name: getattr(contact, column.name) for column in ContactRow.__table__.columns}
+    return contact_public(contact)
 
 
 @api.get("/crm/contacts")
-async def get_contacts(user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def get_contacts(
+    q: str | None = Query(default=None, max_length=200),
+    status_filter: str | None = Query(default=None, alias="status"),
+    source: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db),
+):
+    """List this tenant's contacts; supports text search, status/source filters and pagination."""
     business = await current_business(user, db)
-    rows = (await db.scalars(select(ContactRow).where(ContactRow.business_id == business.id))).all()
-    return [{column.name: getattr(row, column.name) for column in ContactRow.__table__.columns} for row in rows]
+    stmt = select(ContactRow).where(ContactRow.business_id == business.id)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(ContactRow.first_name.ilike(term), ContactRow.last_name.ilike(term),
+                              ContactRow.email.ilike(term), ContactRow.company.ilike(term),
+                              ContactRow.phone.ilike(term)))
+    if status_filter:
+        stmt = stmt.where(ContactRow.status == status_filter)
+    if source:
+        stmt = stmt.where(ContactRow.source.ilike(source.strip()))
+    stmt = stmt.order_by(ContactRow.created_at.desc()).offset(offset).limit(limit)
+    rows = (await db.scalars(stmt)).all()
+    return [contact_public(row) for row in rows]
+
+
+@api.put("/crm/contacts/{contact_id}")
+@api.patch("/crm/contacts/{contact_id}")
+async def update_contact(contact_id: str, data: ContactUpdate,
+                         user: UserRow = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    contact = await db.scalar(select(ContactRow).where(
+        ContactRow.id == contact_id, ContactRow.business_id == business.id))
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(contact, key, value)
+    await db.commit()
+    await db.refresh(contact)
+    return contact_public(contact)
+
+
+@api.delete("/crm/contacts/{contact_id}", status_code=204)
+async def delete_contact(contact_id: str, user: UserRow = Depends(current_user),
+                         db: AsyncSession = Depends(get_db)):
+    business = await current_business(user, db)
+    contact = await db.scalar(select(ContactRow).where(
+        ContactRow.id == contact_id, ContactRow.business_id == business.id))
+    if not contact:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    await db.delete(contact)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @api.post("/ai/workflows", status_code=201)
@@ -285,7 +354,8 @@ async def analytics(user: UserRow = Depends(current_user), db: AsyncSession = De
     business = await current_business(user, db)
     contacts = await db.scalar(select(func.count()).select_from(ContactRow).where(ContactRow.business_id == business.id))
     workflows = await db.scalar(select(func.count()).select_from(WorkflowRow).where(WorkflowRow.business_id == business.id))
-    active = await db.scalar(select(func.count()).select_from(WorkflowRow).where(WorkflowRow.business_id == business.id, WorkflowRow.is_active.is_(True)))
+    active = await db.scalar(select(func.count()).select_from(WorkflowRow).where(
+        WorkflowRow.business_id == business.id, WorkflowRow.is_active.is_(True)))
     return {"total_contacts": contacts, "total_workflows": workflows, "active_workflows": active,
             "business_status": business.status, "business_name": business.name}
 
@@ -315,7 +385,8 @@ async def startup():
                     db.add(admin)
                     await db.flush()
                     demo.owner_id = admin.id
-                for first, last, company in [("Alex", "Morgan", "Northwind"), ("Jamie", "Lee", "Contoso"), ("Taylor", "Reed", "Fabrikam")]:
+                for first, last, company in [("Alex", "Morgan", "Northwind"), ("Jamie", "Lee", "Contoso"),
+                                             ("Taylor", "Reed", "Fabrikam")]:
                     db.add(ContactRow(business_id=demo.id, created_by=admin.id, first_name=first, last_name=last,
                                       company=company, status="new", tags=["demo"], custom_fields={}))
                 await db.commit()
